@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+<title>The key that opens search</title>
+<style>
+:root{ --ink:#1b1a18; --ink-soft:#262421; --paper:#f7f5f2; --sand:#a49c92;
+       --serif: Georgia, 'Times New Roman', serif; }
+*{ margin:0; padding:0; box-sizing:border-box }
+html,body{ background:transparent; overflow:hidden; user-select:none; font-family:var(--serif) }
+body{ padding:12px }
+.card{ background:var(--ink); border:1px solid rgba(247,245,242,.12); border-radius:18px;
+       box-shadow:0 12px 40px rgba(0,0,0,.5); padding:22px }
+h1{ font-size:15px; font-weight:400; color:var(--paper) }
+.key{ margin-top:14px; background:var(--ink-soft); border:1px solid rgba(247,245,242,.12);
+      border-radius:12px; padding:16px; text-align:center; color:var(--paper);
+      font-family:Consolas, ui-monospace, monospace; font-size:20px; }
+.key.listening{ border-color:rgba(247,245,242,.4); color:var(--sand);
+                font-family:var(--serif); font-size:13px; font-style:italic }
+p.why{ margin-top:12px; font-size:10.5px; color:var(--sand); line-height:1.5 }
+.row{ display:flex; align-items:center; margin-top:16px; gap:12px }
+button{ background:none; border:0; color:var(--sand); font-family:var(--serif);
+        font-size:11px; cursor:default }
+button.done{ color:var(--paper); font-weight:600; margin-left:auto }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>The key that opens search</h1>
+  <div class="key listening" id="key">press any key…</div>
+  <p class="why">Works in every app while the dock is running. Hold Ctrl, Alt or
+     Shift with it if a plain key gets in your way when you type.</p>
+  <div class="row">
+    <button id="reset">Back to \</button>
+    <button class="done" id="done">Done</button>
+  </div>
+</div>
+<script>
+  // The next keystroke IS the answer, so it never reaches anything else.
+  var keyEl = document.getElementById('key');
+  var saved = null;
+
+  // Electron accelerator names for the keys that aren't just their character.
+  var NAMED = {
+    ' ': 'Space', 'Escape': 'Esc', 'ArrowUp': 'Up', 'ArrowDown': 'Down',
+    'ArrowLeft': 'Left', 'ArrowRight': 'Right', 'Enter': 'Return', 'Tab': 'Tab',
+    'Backspace': 'Backspace', 'Delete': 'Delete', 'Home': 'Home', 'End': 'End',
+    'PageUp': 'PageUp', 'PageDown': 'PageDown', 'Insert': 'Insert',
+  };
+  var MODS = ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph'];
+
+  function show(accel, listening) {
+    keyEl.textContent = listening ? 'press any key…' : accel;
+    keyEl.className = listening ? 'key listening' : 'key';
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (MODS.indexOf(e.key) >= 0) return;          // a modifier alone isn't a shortcut
+    e.preventDefault();
+    if (e.key === 'Escape' && !saved) { window.dock.closeRecorder(); return; }
+    var parts = [];
+    if (e.ctrlKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    if (e.metaKey) parts.push('Super');
+    var base = NAMED[e.key] || (e.key.length === 1 ? e.key.toUpperCase() : e.key);
+    parts.push(base);
+    var accel = parts.join('+');
+    show(accel, false);
+    window.dock.setHotkey(accel).then(function (res) {
+      saved = res.hotkey;
+      show(res.hotkey, false);
+      if (!res.ok) keyEl.textContent = res.hotkey + '  (that one was taken)';
+    });
+  });
+
+  document.getElementById('reset').addEventListener('click', function () {
+    window.dock.setHotkey('\\').then(function (res) { saved = res.hotkey; show(res.hotkey, false); });
+  });
+  document.getElementById('done').addEventListener('click', function () {
+    window.dock.closeRecorder();
+  });
+  window.dock.onState(function (s) { if (s.hotkey && !saved) show(s.hotkey, false); });
+</script>
+</body>
+</html>

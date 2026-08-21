@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src data:;" />
+<title>RAYIS Dock</title>
+<style>
+/* ===========================================================================
+   The "\" palette, Windows edition — the same card as the Mac dock: ink,
+   paper, serif, one column of answers. Georgia rather than New York because
+   it is on every Windows machine and the palette must never wait on a font.
+   =========================================================================== */
+:root{
+  --ink:#1b1a18; --ink-soft:#262421; --paper:#f7f5f2; --sand:#a49c92;
+  --red:#c0554c;
+  --serif: Georgia, 'Times New Roman', serif;
+}
+*{ margin:0; padding:0; box-sizing:border-box }
+html,body{ background:transparent; overflow:hidden; user-select:none;
+           font-family:var(--serif); -webkit-font-smoothing:antialiased }
+body{ padding:14px }                       /* room for the card's shadow */
+
+.card{
+  background:var(--ink); border:1px solid rgba(247,245,242,.12);
+  border-radius:22px; box-shadow:0 14px 46px rgba(0,0,0,.55);
+  overflow:hidden;
+}
+
+/* ---- the search row ---- */
+.searchrow{ display:flex; align-items:center; gap:12px; padding:15px 20px }
+.mag{ width:17px; height:17px; flex:none; opacity:.62 }
+.mag svg{ display:block; width:100%; height:100% }
+#q{
+  flex:1; background:none; border:0; outline:0; color:var(--paper);
+  font-family:var(--serif); font-size:21px; user-select:text;
+}
+#q::placeholder{ color:var(--sand); opacity:.85 }
+
+hr{ border:0; border-top:1px solid rgba(247,245,242,.12); margin:0 18px }
+
+/* ---- results ---- */
+.list{ max-height:390px; overflow-y:auto; padding:6px 10px 4px }
+.list::-webkit-scrollbar{ width:8px }
+.list::-webkit-scrollbar-thumb{ background:rgba(247,245,242,.16); border-radius:4px }
+
+.head{
+  font-size:9px; letter-spacing:.22em; color:var(--sand); opacity:.85;
+  padding:10px 12px 5px; font-family:system-ui, sans-serif; font-weight:600;
+}
+.row{
+  display:flex; align-items:center; gap:12px; padding:9px 12px;
+  border-radius:11px; cursor:default;
+}
+.row.on{ background:rgba(247,245,242,.09) }
+.ico{ width:22px; text-align:center; font-size:15px; flex:none }
+.txt{ min-width:0; flex:1 }
+.name{ color:var(--paper); font-size:14.5px; line-height:1.25 }
+.sub{
+  color:var(--sand); font-size:10.5px; margin-top:1px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.lvl{
+  font-family:system-ui, sans-serif; font-size:8.5px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--sand); border:1px solid rgba(247,245,242,.2);
+  border-radius:4px; padding:1px 5px; flex:none;
+}
+.go{ color:var(--sand); font-size:12px; flex:none; opacity:.7 }
+
+.empty{ color:var(--sand); font-size:12.5px; font-style:italic; padding:20px 12px }
+
+/* ---- footer ---- */
+.foot{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:8px 20px 12px;
+}
+.hint{ color:var(--sand); opacity:.75; font-size:10px; font-style:italic }
+.mark{
+  color:var(--sand); opacity:.6; font-size:9px; letter-spacing:.2em;
+  font-family:system-ui, sans-serif; font-weight:500;
+}
+
+/* ---- the way in ---- */
+.signin{ padding:24px 24px 20px }
+.eyebrow{
+  font-size:9px; letter-spacing:.25em; color:var(--sand); opacity:.8;
+  font-family:system-ui, sans-serif; font-weight:600;
+}
+.signin h1{ font-size:22px; font-weight:400; color:var(--paper); margin-top:4px }
+.signin p.why{ font-size:11.5px; color:var(--sand); margin-top:4px; line-height:1.45 }
+.field{
+  display:flex; align-items:center; gap:10px; margin-top:9px;
+  background:var(--ink-soft); border:1px solid rgba(247,245,242,.14);
+  border-radius:999px; padding:10px 14px;
+}
+.field span{ color:var(--sand); font-size:11px; width:15px; text-align:center; flex:none }
+.field input{
+  flex:1; background:none; border:0; outline:0; color:var(--paper);
+  font-family:var(--serif); font-size:15px; user-select:text;
+}
+.field input::placeholder{ color:var(--sand); opacity:.8 }
+.signin .foot2{ display:flex; align-items:center; gap:12px; margin-top:14px }
+.signin .note{ flex:1; font-size:10.5px; font-style:italic; color:var(--sand); opacity:.85 }
+.signin .note.bad{ color:var(--red); opacity:1 }
+button.go-btn{
+  background:var(--paper); color:var(--ink); border:0; border-radius:999px;
+  font-family:var(--serif); font-size:12px; font-weight:600;
+  padding:8px 20px; cursor:default;
+}
+button.go-btn[disabled]{ opacity:.6 }
+</style>
+</head>
+<body>
+  <div class="card" id="card"></div>
+  <script src="palette.js"></script>
+</body>
+</html>

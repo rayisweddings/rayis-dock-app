@@ -1,0 +1,46 @@
+{
+  "name": "rayis-dock-desktop",
+  "productName": "RAYIS Dock",
+  "version": "3.0.0",
+  "description": "RAYIS Dock — press one key and search everything your RAYIS HQ login opens",
+  "main": "main.js",
+  "author": "RAYIS Weddings",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.rayisweddings.dock",
+    "productName": "RAYIS Dock",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**"
+    ],
+    "icon": "build/icon.png",
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "artifactName": "RAYIS-Dock-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "artifactName": "RAYIS-Dock-Setup.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [ { "target": "dmg", "arch": ["universal"] } ],
+      "identity": null,
+      "artifactName": "RAYIS-Dock-Mac.${ext}"
+    }
+  }
+}
