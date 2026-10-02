@@ -1,7 +1,7 @@
 {
   "name": "rayis-dock-desktop",
   "productName": "RAYIS Dock",
-  "version": "3.0.0",
+  "version": "3.4.0",
   "description": "RAYIS Dock — press one key and search everything your RAYIS HQ login opens",
   "main": "main.js",
   "author": "RAYIS Weddings",

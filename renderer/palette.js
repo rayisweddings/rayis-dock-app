@@ -6,6 +6,8 @@
 // login's grants open. Nothing here decides access; it only draws the answer.
 
 const card = document.getElementById('card');
+const main = document.getElementById('main');   // the search box, or the way in
+const upd = document.getElementById('upd');     // the update row, under either
 
 let state = { signedIn: false, who: {}, apps: [], favorites: [], hotkey: '\\', error: null };
 let hits = { couples: [], leads: [], galleries: [], staff: [], planning: [], sections: [] };
@@ -83,6 +85,7 @@ const ICONS = { couple: '💍', lead: '⚡️', gallery: '📷', staff: '👤', 
 /* -------------------------------------------------------------------- draw */
 
 function render() {
+  renderUpdate();
   if (!state.signedIn) { renderSignIn(); return; }
 
   items = buildItems();
@@ -115,7 +118,7 @@ function render() {
   const hint = nothing ? 'nothing by that name  ·  esc closes'
     : (rows.length ? '↑↓ choose · ↵ open · esc close' : 'esc closes');
 
-  card.innerHTML = `
+  main.innerHTML = `
     <div class="searchrow">
       <div class="mag">${MAG}</div>
       <input id="q" type="text" spellcheck="false" autocomplete="off"
@@ -151,9 +154,37 @@ function paint() {
   if (on) on.scrollIntoView({ block: 'nearest' });
 }
 
+/* ------------------------------------------------------------------ update */
+
+// "3.4.0" is how the app counts itself; the website says "3.4". Show them the
+// same way so the two numbers in the row can be compared at a glance.
+const shortVersion = (v) => String(v || '').replace(/^(\d+\.\d+)\.0$/, '$1');
+
+// A newer dock is published: one row, drawn on its own so a download ticking
+// from 41% to 42% never redraws the search box or the sign-in form above it.
+function renderUpdate() {
+  if (!state.updateVersion) { upd.innerHTML = ''; return; }
+  const running = Boolean(state.updating);
+  const name = running ? 'Updating the dock' : 'Update available';
+  const sub = running
+    ? (state.updateStep || 'Starting…')
+    : (state.updateError || state.updateStep
+      || `version ${state.updateVersion} — you have ${shortVersion(state.version)}. Installs itself.`);
+  const bad = !running && state.updateError ? ' bad' : '';
+  upd.innerHTML = `<hr />
+    <div class="uprow${running ? ' busy' : ''}" id="uprow">
+      <div class="txt"><div class="name">${esc(name)}</div>
+        <div class="sub${bad}">${esc(sub)}</div></div>
+      ${running ? '' : '<div class="go">↓</div>'}
+    </div>`;
+  document.getElementById('uprow').addEventListener('click', () => {
+    if (!state.updating) window.dock.installUpdate();   // the main process ignores a second click too
+  });
+}
+
 function renderSignIn() {
   const err = formError || state.error;
-  card.innerHTML = `
+  main.innerHTML = `
     <div class="signin">
       <div class="eyebrow">RAYIS HQ</div>
       <h1>Sign in to open the studio</h1>
@@ -256,9 +287,19 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'Enter') { openAt(sel); e.preventDefault(); }
 });
 
+// Everything in the state except the update's own fields.
+function apartFromUpdate(s) {
+  const { version, updateVersion, updating, updateStep, updateError, ...rest } = s;
+  return JSON.stringify(rest);
+}
+
 window.dock.onState((s) => {
   const wasOut = !state.signedIn;
+  const onlyUpdate = apartFromUpdate(s) === apartFromUpdate(state);
   state = s;
+  // Nothing moved but the update row: redraw that alone, and leave whatever
+  // the person is halfway through typing where it is.
+  if (onlyUpdate) { renderUpdate(); fit(); return; }
   if (wasOut && s.signedIn) { query = ''; sel = 0; formError = null; }
   render();
 });

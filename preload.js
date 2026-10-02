@@ -1,7 +1,7 @@
 // The only bridge between the palette and the machine. Nothing else is exposed:
 // no filesystem, no shell, no arbitrary fetch — the renderer can ask the main
-// process to sign in, search, and open a rayisweddings.com path, and that is
-// the whole surface.
+// process to sign in, search, open a rayisweddings.com path, and install the
+// update the main process has already found — and that is the whole surface.
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('dock', {
@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('dock', {
   setHotkey: (accel) => ipcRenderer.invoke('dock:setHotkey', accel),
   closeRecorder: () => ipcRenderer.invoke('dock:closeRecorder'),
   setFavorites: (favs) => ipcRenderer.invoke('dock:favorites', favs),
+  installUpdate: () => ipcRenderer.invoke('dock:installUpdate'),
   onState: (fn) => ipcRenderer.on('state', (_e, s) => fn(s)),
   onOpened: (fn) => ipcRenderer.on('opened', () => fn()),
 });

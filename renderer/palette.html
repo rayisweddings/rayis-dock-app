@@ -108,10 +108,20 @@ button.go-btn{
   padding:8px 20px; cursor:default;
 }
 button.go-btn[disabled]{ opacity:.6 }
+
+/* ---- a newer dock is out: one row at the foot of the card, signed in or not ---- */
+.uprow{ display:flex; align-items:center; gap:12px; padding:10px 20px 12px; cursor:default }
+.uprow:hover{ background:rgba(247,245,242,.09) }
+.uprow.busy:hover{ background:none }
+.uprow .sub{ white-space:normal }
+.uprow .sub.bad{ color:var(--red) }
 </style>
 </head>
 <body>
-  <div class="card" id="card"></div>
+  <div class="card" id="card">
+    <div id="main"></div>
+    <div id="upd"></div>
+  </div>
   <script src="palette.js"></script>
 </body>
 </html>

@@ -16,6 +16,11 @@
 //                                        already scoped to their grants
 //
 // Nothing about who-may-see-what is decided here. That is the point.
+//
+// The catalog and the sign-in also carry `dockVersionWin` — the newest Windows
+// dock that has been published. When that is ahead of this build the dock says
+// so, in the tray and in the palette, and one click downloads the installer
+// from the GitHub release and runs it over the top of this copy.
 
 const {
   app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, shell,
@@ -23,8 +28,19 @@ const {
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
+const { Readable, Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 
-const SITE = 'https://rayisweddings.com';
+// Two overrides for looking at a build against a local stub. They are read
+// only when the app is run from source (`electron .`), never in an installed
+// copy — an installed dock always talks to the real site and only ever runs
+// the installer from the real release, whatever the environment says.
+const fromSource = !app.isPackaged;
+const SITE = ((fromSource && process.env.RAYIS_DOCK_SITE) || 'https://rayisweddings.com')
+  .replace(/\/+$/, '');
+const UPDATE_URL = (fromSource && process.env.RAYIS_DOCK_UPDATE_URL)
+  || 'https://github.com/rayisweddings/rayis-dock-app/releases/latest/download/RAYIS-Dock-Setup.exe';
 const DEFAULT_HOTKEY = '\\';               // the key the dock has always used
 const CATALOG_INTERVAL = 15 * 60 * 1000;   // Ray ships tools all week
 const STALE_MS = 2 * 60 * 1000;
@@ -98,7 +114,11 @@ const state = {
   favorites: [],
   hotkey: DEFAULT_HOTKEY,
   hotkeyOK: true,
-  updateVersion: null,
+  version: app.getVersion(),   // what this copy is
+  updateVersion: null,         // the newer one on offer, or null
+  updating: false,             // an update is downloading / installing right now
+  updateStep: null,            // one short line about where that has got to
+  updateError: null,           // one plain sentence when it didn't work
   error: null,
 };
 
@@ -133,22 +153,40 @@ function isNewer(a, b) {
   return false;
 }
 
+// Is there a newer Windows dock than this one? The website says which version
+// is published in `dockVersionWin`. (`dockVersion` is the Mac app's number and
+// means nothing here.) No field, or nothing newer, means no update. Answers
+// whether anything changed, so the caller knows to redraw.
+function noteVersion(data) {
+  if (state.updating) return false;        // don't pull the row out from under a download
+  const raw = data && data.dockVersionWin;
+  const v = (typeof raw === 'string' || typeof raw === 'number') ? String(raw).trim() : '';
+  const next = /^\d+(\.\d+)*$/.test(v) && isNewer(v, app.getVersion()) ? v : null;
+  if (next === state.updateVersion) return false;
+  state.updateVersion = next;
+  state.updateStep = null;
+  state.updateError = null;
+  return true;
+}
+
 // The app list, fresh. Anything the team registered for the HQ login is here
 // within minutes of shipping, and so is any grant Ray changed — in both
 // directions. This is why the list is fetched rather than shipped.
 async function refreshCatalog() {
   const headers = cookieHeader();
-  if (!headers) return;
   try {
     const res = await fetch(`${SITE}/downloads/dock-catalog.json?me=1`, {
-      headers, cache: 'no-store',
+      headers: headers || {}, cache: 'no-store',
     });
     if (!res.ok) return;
     const data = await res.json();
-    if (data.dockVersion && isNewer(data.dockVersion, app.getVersion())) {
-      state.updateVersion = data.dockVersion;
-    } else {
-      state.updateVersion = null;
+    const versionChanged = noteVersion(data);
+    // Nobody signed in when this was asked: the only thing the answer is good
+    // for is the version. The sign-in card stays exactly as it was.
+    if (!headers) {
+      lastCatalogFetch = Date.now();
+      if (versionChanged) pushState();
+      return;
     }
     // The website is the authority on whether this session is still good.
     // "Not signed in" empties the dock rather than leaving yesterday's tiles
@@ -203,6 +241,7 @@ async function signIn(email, password) {
     state.error = null;
     state.who = { name: data.name || '', email: data.email || email, role: data.role || 'member' };
     state.apps = Array.isArray(data.apps) ? data.apps : [];
+    noteVersion(data);
     lastCatalogFetch = Date.now();
     writeConfig({ who: state.who });
     await refreshCatalog();
@@ -227,6 +266,154 @@ function signOut({ silent = false, reason = null } = {}) {
   state.error = reason;
   writeConfig({ favorites: [] });
   pushState();
+}
+
+/* --------------------------------------------------------------------- update */
+
+// One click: fetch the newest installer from the release, check it really is
+// one, run it silently over this copy, and step aside. The installer closes
+// with the dock already reopened on the new version.
+//
+// Anything that goes wrong before the installer has started leaves this dock
+// running exactly as it was, with one sentence saying what happened and the
+// row still there to click again.
+
+const UPDATE_STALL_MS = 60 * 1000;         // no bytes for a minute = give up
+
+function updateFolders() {
+  const tmp = app.getPath('temp');
+  try {
+    return fs.readdirSync(tmp)
+      .filter((n) => n.startsWith('rayis-dock-update-'))
+      .map((n) => path.join(tmp, n));
+  } catch {
+    return [];
+  }
+}
+
+// The last update's installer is still sitting in the temp folder. Best effort:
+// a file Windows still has open is left for the next launch.
+function sweepOldUpdates() {
+  for (const dir of updateFolders()) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* next time */ }
+  }
+}
+
+function setUpdateStep(step) {
+  if (state.updateStep === step) return;
+  state.updateStep = step;
+  pushState();
+}
+
+async function downloadInstaller(file) {
+  const abort = new AbortController();
+  let stall = null;
+  const alive = () => {
+    clearTimeout(stall);
+    stall = setTimeout(() => abort.abort(), UPDATE_STALL_MS);
+  };
+  alive();
+  try {
+    const res = await fetch(UPDATE_URL, { redirect: 'follow', cache: 'no-store', signal: abort.signal });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    const total = Number(res.headers.get('content-length')) || 0;
+    let got = 0;
+    const count = new Transform({
+      transform(chunk, _enc, done) {
+        got += chunk.length;
+        alive();
+        setUpdateStep(total
+          ? `Downloading… ${Math.min(100, Math.floor((got / total) * 100))}%`
+          : `Downloading… ${Math.floor(got / 1048576)} MB`);
+        done(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(res.body), count, fs.createWriteStream(file));
+    if (total && got !== total) throw new Error('short download');
+  } finally {
+    clearTimeout(stall);
+  }
+}
+
+// A Windows program starts with the two letters "MZ", and the dock's installer
+// is tens of megabytes. An error page or a half-finished file is neither.
+function looksLikeInstaller(file) {
+  try {
+    if (fs.statSync(file).size <= 1024 * 1024) return false;
+    const fd = fs.openSync(file, 'r');
+    try {
+      const head = Buffer.alloc(2);
+      fs.readSync(fd, head, 0, 2, 0);
+      return head[0] === 0x4d && head[1] === 0x5a;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+async function installUpdate() {
+  if (state.updating || !state.updateVersion) return false;   // a second click does nothing
+  state.updating = true;
+  state.updateError = null;
+  state.updateStep = 'Downloading…';
+  pushState();
+
+  let dir = null;
+  const fail = (sentence) => {
+    if (dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* swept later */ } }
+    state.updating = false;
+    state.updateStep = null;
+    state.updateError = sentence;
+    pushState();
+    return false;
+  };
+
+  let file;
+  try {
+    dir = fs.mkdtempSync(path.join(app.getPath('temp'), 'rayis-dock-update-'));
+    file = path.join(dir, 'RAYIS-Dock-Setup.exe');
+    await downloadInstaller(file);
+  } catch {
+    return fail('The update didn’t download. Check the internet, then click to try again.');
+  }
+
+  setUpdateStep('Checking the download…');
+  if (!looksLikeInstaller(file)) {
+    return fail('The download wasn’t the installer. Click to try again.');
+  }
+
+  // Only Windows can run the installer. Anywhere else this is as far as it
+  // goes — enough to look at the download and the check on a Mac.
+  if (process.platform !== 'win32') {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* swept later */ }
+    state.updating = false;
+    state.updateStep = 'Downloaded. It only installs itself on Windows.';
+    pushState();
+    return true;
+  }
+
+  // The arguments electron-updater hands an electron-builder one-click NSIS
+  // installer: --updated (this is an update — close the running app and carry
+  // on), /S (no windows), --force-run (open the dock again when it's done).
+  setUpdateStep('Installing… the dock will reopen by itself.');
+  try {
+    const child = spawn(file, ['--updated', '/S', '--force-run'], { detached: true, stdio: 'ignore' });
+    // Wait until Windows has actually started it. If it refuses — antivirus,
+    // a locked-down profile — the dock must still be here to say so.
+    await new Promise((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    return fail('Windows wouldn’t start the installer. Click to try again, or ask Ray.');
+  }
+  app.isQuitting = true;
+  app.quit();
+  return true;
 }
 
 /* --------------------------------------------------------------------- search */
@@ -298,7 +485,14 @@ function createPalette() {
   palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   palette.loadFile(path.join(__dirname, 'renderer', 'palette.html'));
   palette.on('blur', () => palette.hide());   // clicking elsewhere dismisses — Spotlight manners
-  palette.on('close', (e) => { e.preventDefault(); palette.hide(); });
+  // Closing only hides it — except when the whole app is quitting (Quit in the
+  // tray, or an update stepping aside for the installer), where a refused
+  // close would call the quit off.
+  palette.on('close', (e) => {
+    if (app.isQuitting) return;
+    e.preventDefault();
+    palette.hide();
+  });
   palette.webContents.on('did-finish-load', () => pushState());
 }
 
@@ -382,10 +576,17 @@ function buildTray() {
   items.push({ label: 'Change the search key…', click: openRecorder });
   if (state.updateVersion) {
     items.push({ type: 'separator' });
-    items.push({
-      label: `Update available — version ${state.updateVersion}`,
-      click: () => shell.openExternal(`${SITE}/dock-setup`),
-    });
+    if (state.updating) {
+      items.push({ label: `Updating the dock — ${state.updateStep || 'starting…'}`, enabled: false });
+    } else {
+      // The menu closes on the click, so the palette opens to show the progress.
+      items.push({
+        label: state.updateError
+          ? 'The update didn’t work — click to try again'
+          : `Update available — version ${state.updateVersion}`,
+        click: () => { installUpdate(); showPalette(); },
+      });
+    }
   }
   if (favApps.length) {
     items.push({ type: 'separator' });
@@ -436,6 +637,8 @@ ipcMain.handle('dock:setHotkey', (_e, accel) => {
   return { ok, hotkey: state.hotkey };
 });
 ipcMain.handle('dock:closeRecorder', () => { if (recorder) recorder.close(); return true; });
+// Answers straight away; the progress arrives as state pushes.
+ipcMain.handle('dock:installUpdate', () => { installUpdate(); return true; });
 ipcMain.handle('dock:favorites', (_e, favs) => {
   state.favorites = Array.isArray(favs) ? favs : [];
   writeConfig({ favorites: state.favorites });
@@ -459,6 +662,7 @@ if (!app.requestSingleInstanceLock()) {
     state.who = cfg.who || state.who;
     state.signedIn = Boolean(readToken());
 
+    sweepOldUpdates();
     createPalette();
     registerHotkey(cfg.hotkey || DEFAULT_HOTKEY);
     buildTray();
