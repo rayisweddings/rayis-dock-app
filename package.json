@@ -21,7 +21,8 @@
     "files": [
       "main.js",
       "preload.js",
-      "renderer/**"
+      "renderer/**",
+      "build/icon.png"
     ],
     "icon": "build/icon.png",
     "win": {
