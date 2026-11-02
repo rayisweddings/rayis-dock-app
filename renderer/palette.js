@@ -49,6 +49,14 @@ function searchApps(q) {
 
 /* ------------------------------------------------------------- what to show */
 
+// "inq", "inquiries", "new leads", "contact forms" — the Mac dock's words.
+function looksLikeInquiries(q) {
+  const s = q.toLowerCase().trim();
+  if (s.length < 3) return false;
+  return ['inquiries', 'inquiry', 'enquiries', 'enquiry', 'new leads', 'new inquiries', 'contact forms']
+    .some((w) => w.startsWith(s));
+}
+
 function buildItems() {
   const out = [];
   const q = query.trim();
@@ -61,6 +69,10 @@ function buildItems() {
     if (list.length) out.push({ head: 'FAVOURITES' });
     list.slice(0, 7).forEach((a) => out.push({ kind: 'app', app: a }));
     return out;
+  }
+
+  if (state.inquiries && state.inquiries.allowed && looksLikeInquiries(q)) {
+    out.push({ kind: 'inquiries' });
   }
 
   const apps = searchApps(q).slice(0, 6);
@@ -97,6 +109,14 @@ function render() {
     if (i.head) return `<div class="head">${esc(i.head)}</div>`;
     n += 1;
     const on = n === sel ? ' on' : '';
+    if (i.kind === 'inquiries') {
+      const needed = state.inquiries.needed;
+      return `<div class="row${on}" data-i="${n}">`
+        + '<div class="ico">📥</div>'
+        + '<div class="txt"><div class="name">Inquiries</div>'
+        + `<div class="sub">${needed ? `${needed} reply needed` : 'the contact forms of the last two weeks'}</div></div>`
+        + '<div class="go">↗</div></div>';
+    }
     if (i.kind === 'app') {
       const a = i.app;
       const lvl = a.level === 'view' ? '<span class="lvl">view only</span>' : '';
@@ -270,6 +290,7 @@ function rowsOnly() { return items.filter((i) => !i.head); }
 function openAt(i) {
   const row = rowsOnly()[i];
   if (!row) return;
+  if (row.kind === 'inquiries') { window.dock.openInquiries(); return; }
   window.dock.open(row.kind === 'app' ? row.app.path : row.hit.path);
 }
 

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';" />
+<title>Inquiries</title>
+<style>
+/* ===========================================================================
+   Inquiries, Windows edition — the Mac dock's card, bottom-right: ink, paper,
+   serif, the contact forms of the last two weeks.
+   =========================================================================== */
+:root{
+  --ink:#1b1a18; --ink-soft:#21201e; --paper:#f7f5f2; --sand:#a49c92;
+  --amber:#f2c26b;
+  --serif: Georgia, 'Times New Roman', serif;
+}
+*{ margin:0; padding:0; box-sizing:border-box }
+html,body{ background:transparent; overflow:hidden; user-select:none;
+           font-family:var(--serif); -webkit-font-smoothing:antialiased }
+body{ padding:12px }                       /* room for the card's shadow */
+
+.card{
+  width:340px; background:var(--ink); border:1px solid rgba(247,245,242,.14);
+  border-radius:16px; box-shadow:0 10px 34px rgba(0,0,0,.5);
+  padding:11px 12px 12px; display:flex; flex-direction:column; gap:8px;
+}
+.top{ display:flex; align-items:baseline; gap:8px; padding:0 2px }
+.top h1{ font-size:15px; font-weight:500; color:var(--paper) }
+.top .count{ font-size:11px; color:var(--sand) }
+.top .x{
+  margin-left:auto; width:22px; height:22px; border:0; background:none;
+  color:var(--sand); font-size:13px; cursor:default; align-self:center;
+}
+.top .x:hover{ color:var(--paper) }
+
+.note{ font-size:11px; font-style:italic; color:rgba(247,245,242,.85); padding:0 2px }
+.trouble{ font-size:11px; color:var(--amber); padding:0 2px; line-height:1.4 }
+.empty{ font-size:12px; font-style:italic; color:var(--sand); padding:6px 2px }
+
+.row{
+  position:relative; background:var(--ink-soft); border:1px solid rgba(247,245,242,.10);
+  border-radius:12px; padding:8px 8px 8px 10px; cursor:default;
+}
+.row:hover{ background:rgba(247,245,242,.14) }
+.row.needed::before{
+  content:''; position:absolute; left:0; top:8px; bottom:8px; width:3px;
+  border-radius:2px; background:var(--paper);
+}
+.row .who{ display:flex; align-items:baseline; gap:6px; min-width:0 }
+.row .name{
+  font-size:13.5px; font-weight:500; color:var(--paper);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.row .new{
+  font-size:10px; font-weight:600; color:var(--ink); background:var(--paper);
+  border-radius:4px; padding:1px 5px; flex:none;
+}
+.row .facts{
+  font-size:11px; color:var(--sand); margin-top:2px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.row .label{
+  font-size:11.5px; color:rgba(247,245,242,.6); margin-top:4px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.row.needed .label{ color:var(--paper); font-weight:600 }
+.row .marked{ display:flex; align-items:center; margin-top:4px; font-size:11.5px;
+              font-weight:500; color:rgba(247,245,242,.85) }
+.row .undo{
+  margin-left:auto; border:0; background:none; color:var(--paper); font-family:var(--serif);
+  font-size:11px; font-weight:600; text-decoration:underline; cursor:default;
+}
+.more{
+  border:0; background:none; text-align:left; color:var(--sand); font-family:var(--serif);
+  font-size:11px; font-style:italic; padding:0 2px; cursor:default;
+}
+.more:hover{ color:var(--paper) }
+</style>
+</head>
+<body>
+  <div class="card" id="card"></div>
+  <script src="inquiries.js"></script>
+</body>
+</html>

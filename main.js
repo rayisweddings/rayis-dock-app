@@ -32,7 +32,7 @@ const { spawn } = require('child_process');
 const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
-// Two overrides for looking at a build against a local stub. They are read
+// Overrides for looking at a build against a local stub. They are read
 // only when the app is run from source (`electron .`), never in an installed
 // copy — an installed dock always talks to the real site and only ever runs
 // the installer from the real release, whatever the environment says.
@@ -41,6 +41,9 @@ const SITE = ((fromSource && process.env.RAYIS_DOCK_SITE) || 'https://rayisweddi
   .replace(/\/+$/, '');
 const UPDATE_URL = (fromSource && process.env.RAYIS_DOCK_UPDATE_URL)
   || 'https://github.com/rayisweddings/rayis-dock-app/releases/latest/download/RAYIS-Dock-Setup.exe';
+// And a third: a scratch profile, so a test run on Ray's Mac never writes into
+// ~/Library/Application Support/RAYIS Dock, which the native Mac dock owns.
+if (fromSource && process.env.RAYIS_DOCK_USERDATA) app.setPath('userData', process.env.RAYIS_DOCK_USERDATA);
 const DEFAULT_HOTKEY = '\\';               // the key the dock has always used
 const CATALOG_INTERVAL = 15 * 60 * 1000;   // Ray ships tools all week
 const STALE_MS = 2 * 60 * 1000;
@@ -119,6 +122,7 @@ const state = {
   updating: false,             // an update is downloading / installing right now
   updateStep: null,            // one short line about where that has got to
   updateError: null,           // one plain sentence when it didn't work
+  inquiries: { allowed: false, needed: 0 },   // the Inquiries window, for the palette and the tray
   error: null,
 };
 
@@ -246,6 +250,8 @@ async function signIn(email, password) {
     writeConfig({ who: state.who });
     await refreshCatalog();
     pushState();
+    resetInquiries();
+    refreshInquiries();
     return { ok: true };
   } catch {
     return { ok: false, error: 'Couldn’t reach rayisweddings.com — check the internet.' };
@@ -265,6 +271,7 @@ function signOut({ silent = false, reason = null } = {}) {
   state.favorites = [];
   state.error = reason;
   writeConfig({ favorites: [] });
+  resetInquiries();
   pushState();
 }
 
@@ -414,6 +421,306 @@ async function installUpdate() {
   app.isQuitting = true;
   app.quit();
   return true;
+}
+
+/* ------------------------------------------------------------------ inquiries */
+
+// Kaye's tab — the same one the Mac dock has (RayisDock.swift, Inquiries).
+// Ray, Oct 6 2026: "create a Dock tab … for Kaye to see also, which updates
+// everytime a new contact form is submitted, it shows up on her side of the
+// dock" — each couple "Kaye Reply needed" or "Kaye Replied to Inquiry".
+//
+// GET /hq/leads/api/inquiries: the contact-form couples of the last two weeks.
+// The form writes each lead the moment it's sent, so a minute's poll is "every
+// time a form comes in"; a new one brings the window back up even after the ✕.
+// Click = their reply desk on The flow. Right-click = mark replied (eight
+// seconds to take it back), their Gmail thread, their lead page. A login
+// without Leads gets a 403 and the window simply never shows.
+
+const INQ_INTERVAL = 60 * 1000;
+const INQ_UNDO_MS = 8 * 1000;
+const INQ_WIDTH = 364;                     // the 340 card + room for its shadow
+
+const inq = {
+  allowed: true,       // false once the website says this login can't see leads
+  open: false,
+  loaded: false,
+  rows: [],
+  trouble: null,
+  note: null,
+  fresh: [],           // came in since the window was last opened — they wear "New"
+  pending: null,       // marked replied, not yet told to the site
+  sending: [],         // told to the site, waiting for the list to come back
+};
+let inqWin = null;
+let inqTimer = null;
+let inqCommit = null;
+let inqNoteTimer = null;
+let inqBusy = false;
+let inqSeen = new Set();                   // every inquiry already seen, so only a new one pops it up
+let inqSeenReady = false;
+
+const neededCount = () => inq.rows
+  .filter((r) => r.replyNeeded && inq.pending?.id !== r.id && !inq.sending.includes(r.id)).length;
+
+function pushInquiries() {
+  tell(inqWin, 'inq', { ...inq, pending: inq.pending ? inq.pending.id : null, needed: neededCount() });
+  const was = JSON.stringify(state.inquiries);
+  state.inquiries = { allowed: state.signedIn && inq.allowed, needed: neededCount() };
+  if (JSON.stringify(state.inquiries) !== was) pushState();
+}
+
+function saveInquiries() {
+  writeConfig({
+    inquiriesOpen: inq.open,
+    inquiriesSeen: Array.from(inqSeen).slice(-400),
+    inquiriesRows: inq.rows,
+  });
+}
+
+function sayInquiries(text, ms = 5000) {
+  inq.note = text;
+  clearTimeout(inqNoteTimer);
+  inqNoteTimer = setTimeout(() => { inq.note = null; pushInquiries(); }, ms);
+  pushInquiries();
+}
+
+function leadsFetch(p, { method = 'GET', body } = {}) {
+  const headers = cookieHeader();
+  if (!headers) return null;
+  if (body) headers['Content-Type'] = 'application/json';
+  return fetch(`${SITE}/hq/leads/api/${p}`, {
+    method, headers, cache: 'no-store', body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+async function refreshInquiries() {
+  if (!state.signedIn || !inq.allowed || inqBusy) return;
+  const req = leadsFetch('inquiries');
+  if (!req) return;
+  inqBusy = true;
+  try {
+    const res = await req;
+    if (res.status === 403) {
+      // This login has no Leads access: nothing to show, ever.
+      inq.allowed = false;
+      hideInquiries();
+      pushInquiries();
+      return;
+    }
+    const json = (res.headers.get('content-type') || '').includes('json');
+    const data = json ? await res.json().catch(() => null) : null;
+    if (!res.ok || !data || !data.ok || !Array.isArray(data.inquiries)) {
+      inq.trouble = res.status === 401 || !json
+        ? 'The sign-in on this PC stopped working — sign in again and this fills back in.'
+        : 'Couldn’t reach the leads — this is the last list.';
+      pushInquiries();
+      if (inq.open) showInquiries();
+      return;
+    }
+    const list = data.inquiries;
+    inq.trouble = null;
+    inq.loaded = true;
+    inq.sending = inq.sending.filter((id) => list.find((r) => r.id === id)?.replyNeeded);
+    // A form that came in since the last look: up comes the window, even
+    // after the ✕ — that's the whole point of it.
+    const arrived = list.filter((r) => r.replyNeeded && !inqSeen.has(r.id));
+    if (inqSeenReady && arrived.length) {
+      inq.fresh = Array.from(new Set([...inq.fresh, ...arrived.map((r) => r.id)]));
+      inq.open = true;
+      sayInquiries(arrived.length === 1 ? `New inquiry — ${arrived[0].name}` : `${arrived.length} new inquiries`, 10000);
+    }
+    list.forEach((r) => inqSeen.add(r.id));
+    inqSeenReady = true;
+    inq.rows = list;
+    saveInquiries();
+    pushInquiries();
+    if (inq.open) showInquiries();
+  } catch {
+    inq.trouble = 'Couldn’t reach the leads — this is the last list.';
+    pushInquiries();
+  } finally {
+    inqBusy = false;
+  }
+}
+
+function startInquiries() {
+  const cfg = readConfig();
+  // The first launch that has it shows it once, so it's found.
+  inq.open = cfg.inquiriesOpen !== undefined ? Boolean(cfg.inquiriesOpen) : true;
+  inqSeenReady = Array.isArray(cfg.inquiriesSeen);
+  inqSeen = new Set(cfg.inquiriesSeen || []);
+  if (Array.isArray(cfg.inquiriesRows)) { inq.rows = cfg.inquiriesRows; inq.loaded = true; }
+  refreshInquiries();
+  inqTimer = setInterval(refreshInquiries, INQ_INTERVAL);
+}
+
+// The palette's "Inquiries" ↵ or the tray — up it comes, until the ✕.
+function openInquiries() {
+  if (!state.signedIn || !inq.allowed) return;
+  inq.open = true;
+  inq.fresh = [];
+  saveInquiries();
+  pushInquiries();
+  showInquiries({ here: true });
+  refreshInquiries();
+}
+
+function closeInquiries() {
+  commitInquiry();
+  inq.open = false;
+  inq.fresh = [];
+  saveInquiries();
+  hideInquiries();
+  pushInquiries();
+}
+
+// Signed out, or a different person signed in: nothing of the last login's stays.
+function resetInquiries() {
+  clearTimeout(inqCommit);
+  Object.assign(inq, { allowed: true, loaded: false, rows: [], trouble: null, note: null, fresh: [], pending: null, sending: [] });
+  inqSeen = new Set();
+  inqSeenReady = false;
+  writeConfig({ inquiriesRows: [], inquiriesSeen: undefined });
+  hideInquiries();
+  pushInquiries();
+}
+
+function createInquiriesWindow() {
+  inqWin = new BrowserWindow({
+    width: INQ_WIDTH, height: 160, show: false, frame: false, transparent: true,
+    resizable: false, skipTaskbar: true, alwaysOnTop: true, fullscreenable: false,
+    minimizable: false, maximizable: false, backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true, nodeIntegration: false,
+    },
+  });
+  inqWin.setAlwaysOnTop(true, 'floating');
+  inqWin.setVisibleOnAllWorkspaces(true);
+  inqWin.loadFile(path.join(__dirname, 'renderer', 'inquiries.html'));
+  inqWin.on('close', (e) => {
+    if (app.isQuitting) return;
+    e.preventDefault();
+    closeInquiries();
+  });
+  inqWin.webContents.on('did-finish-load', pushInquiries);
+}
+
+// Bottom-right of its screen, out of the way of whatever she's working on.
+// Opened from the palette, it goes to the screen she's on and stays there.
+function placeInquiries(height) {
+  if (!inqWin || inqWin.isDestroyed()) return;
+  const want = readConfig().inquiriesDisplay;
+  const display = screen.getAllDisplays().find((d) => d.id === want) || screen.getPrimaryDisplay();
+  const { workArea } = display;
+  const h = Math.max(100, Math.min(Math.round(height || inqWin.getSize()[1]), workArea.height - 24));
+  inqWin.setBounds({
+    x: Math.round(workArea.x + workArea.width - INQ_WIDTH - 4),
+    y: Math.round(workArea.y + workArea.height - h - 4),
+    width: INQ_WIDTH,
+    height: h,
+  });
+}
+
+function showInquiries({ here = false } = {}) {
+  if (!state.signedIn || !inq.allowed) return;
+  if (!inqWin || inqWin.isDestroyed()) createInquiriesWindow();
+  if (here) {
+    writeConfig({ inquiriesDisplay: screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id });
+  }
+  placeInquiries();
+  // Never takes the keyboard from what she's typing in.
+  if (!inqWin.isVisible()) inqWin.showInactive();
+}
+
+function hideInquiries() {
+  if (inqWin && !inqWin.isDestroyed()) inqWin.hide();
+}
+
+const findInquiry = (id) => inq.rows.find((r) => r.id === id);
+
+function openInquiryReply(id) {
+  const r = findInquiry(id);
+  if (!r) return;
+  inq.fresh = inq.fresh.filter((x) => x !== id);
+  pushInquiries();
+  shell.openExternal(SITE + r.flowUrl);
+}
+
+function gmailSearchURL(email) {
+  return 'https://mail.google.com/mail/u/?authuser=hello@rayisweddings.com#search/'
+    + encodeURIComponent(`from:${email} OR to:${email}`);
+}
+
+// Straight to the couple's thread in hello@ — the site finds it; a Gmail
+// search for them if it can't.
+async function openInquiryThread(id) {
+  const r = findInquiry(id);
+  if (!r) return;
+  sayInquiries('Opening their Gmail thread…', 4000);
+  try {
+    const res = await leadsFetch(`gmail-thread?id=${encodeURIComponent(r.id)}`);
+    const data = res && res.ok ? await res.json().catch(() => null) : null;
+    if (data && data.ok && data.url) { shell.openExternal(data.url); return; }
+  } catch { /* fall through to the search */ }
+  if (r.email) shell.openExternal(gmailSearchURL(r.email));
+  else sayInquiries(`No email on file for ${r.name}.`);
+}
+
+// "Kaye replied." Eight seconds to take it back, then it's logged.
+function markInquiry(id) {
+  const r = findInquiry(id);
+  if (!r) return;
+  commitInquiry();
+  inq.pending = r;
+  inqCommit = setTimeout(commitInquiry, INQ_UNDO_MS);
+  pushInquiries();
+}
+
+function undoInquiry() {
+  clearTimeout(inqCommit);
+  inq.pending = null;
+  pushInquiries();
+}
+
+async function commitInquiry() {
+  clearTimeout(inqCommit);
+  const r = inq.pending;
+  if (!r) return;
+  inq.pending = null;
+  inq.sending.push(r.id);
+  pushInquiries();
+  let ok = false;
+  try {
+    const res = await leadsFetch('flow-sent', {
+      method: 'POST', body: { id: r.id, step: 'inquiry', phase: '', from: 'mark' },
+    });
+    ok = Boolean(res && res.ok);
+  } catch { ok = false; }
+  if (ok) {
+    sayInquiries(`${r.name} — marked replied.`);
+  } else {
+    inq.sending = inq.sending.filter((x) => x !== r.id);
+    sayInquiries(`Couldn’t mark ${r.name} — try again.`);
+  }
+  refreshInquiries();
+}
+
+function inquiryMenu(id) {
+  const r = findInquiry(id);
+  if (!r || !inqWin) return;
+  const items = [{ label: 'Write the reply (Ray’s tips + templates)', click: () => openInquiryReply(id) }];
+  if (r.replyNeeded) {
+    items.push(inq.pending?.id === id
+      ? { label: 'Undo — not replied yet', click: undoInquiry }
+      : { label: 'Replied from Gmail — mark it', click: () => markInquiry(id) });
+  }
+  items.push({ type: 'separator' });
+  if (r.email) items.push({ label: 'Open their Gmail thread', click: () => openInquiryThread(id) });
+  items.push({ label: 'Open their lead page', click: () => shell.openExternal(SITE + r.leadUrl) });
+  items.push({ label: 'Open The flow', click: () => shell.openExternal(`${SITE}/hq/leads#flow`) });
+  Menu.buildFromTemplate(items).popup({ window: inqWin });
 }
 
 /* --------------------------------------------------------------------- search */
@@ -574,6 +881,10 @@ function buildTray() {
   }
   items.push({ label: `Search RAYIS  (${state.hotkey})`, click: showPalette });
   items.push({ label: 'Change the search key…', click: openRecorder });
+  if (state.inquiries.allowed) {
+    const n = state.inquiries.needed;
+    items.push({ label: n ? `Inquiries — ${n} reply needed` : 'Inquiries', click: openInquiries });
+  }
   if (state.updateVersion) {
     items.push({ type: 'separator' });
     if (state.updating) {
@@ -639,6 +950,18 @@ ipcMain.handle('dock:setHotkey', (_e, accel) => {
 ipcMain.handle('dock:closeRecorder', () => { if (recorder) recorder.close(); return true; });
 // Answers straight away; the progress arrives as state pushes.
 ipcMain.handle('dock:installUpdate', () => { installUpdate(); return true; });
+ipcMain.handle('dock:openInquiries', () => {
+  if (palette) palette.hide();
+  openInquiries();
+  return true;
+});
+ipcMain.handle('inq:state', () => ({ ...inq, pending: inq.pending ? inq.pending.id : null, needed: neededCount() }));
+ipcMain.handle('inq:reply', (_e, id) => { openInquiryReply(id); return true; });
+ipcMain.handle('inq:menu', (_e, id) => { inquiryMenu(id); return true; });
+ipcMain.handle('inq:undo', () => { undoInquiry(); return true; });
+ipcMain.handle('inq:flow', () => { shell.openExternal(`${SITE}/hq/leads#flow`); return true; });
+ipcMain.handle('inq:close', () => { closeInquiries(); return true; });
+ipcMain.handle('inq:resize', (_e, h) => { placeInquiries(h); return true; });
 ipcMain.handle('dock:favorites', (_e, favs) => {
   state.favorites = Array.isArray(favs) ? favs : [];
   writeConfig({ favorites: state.favorites });
@@ -672,15 +995,31 @@ if (!app.requestSingleInstanceLock()) {
 
     refreshCatalog();
     catalogTimer = setInterval(refreshCatalog, CATALOG_INTERVAL);
-    powerMonitor.on('resume', refreshCatalog);   // a sleeping laptop misses ticks
+    powerMonitor.on('resume', () => { refreshCatalog(); refreshInquiries(); });   // a sleeping laptop misses ticks
+    startInquiries();
+    screen.on('display-removed', () => { if (inqWin && inqWin.isVisible()) placeInquiries(); });
 
     // Nobody signed in yet: show them the way in rather than a silent tray icon.
     if (!state.signedIn || process.env.RAYIS_DEBUG_SEARCH) setTimeout(showPalette, 900);
   });
 
   app.on('window-all-closed', (e) => e.preventDefault());  // it lives in the tray
+  // Quitting inside the eight seconds still marks it (three seconds at most).
+  let flushed = false;
+  app.on('before-quit', (e) => {
+    // However the quit started — the tray, an update, Windows shutting down —
+    // the windows may close now. Without this a window's ✕ handler took the
+    // quit for a person closing it, refused, and called the whole quit off.
+    app.isQuitting = true;
+    if (flushed || !inq.pending) return;
+    e.preventDefault();
+    flushed = true;
+    Promise.race([commitInquiry(), new Promise((r) => setTimeout(r, 3000))])
+      .finally(() => { app.isQuitting = true; app.quit(); });
+  });
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
     if (catalogTimer) clearInterval(catalogTimer);
+    if (inqTimer) clearInterval(inqTimer);
   });
 }
